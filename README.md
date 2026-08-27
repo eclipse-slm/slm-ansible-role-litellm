@@ -34,7 +34,7 @@ The role expects these values to be set for each deployment:
 
 - `slm_ansible_role_litellm_version`: LiteLLM image tag, default `v1.98.0`
 - `slm_ansible_role_litellm_docker_compose_url`: upstream Compose URL, default `https://docs.litellm.ai/docker-compose.yml`
-- `slm_ansible_role_litellm_config_yaml`: content used to generate the LiteLLM config file, default `{}`
+- `slm_ansible_role_litellm_config_yaml`: content used to generate the LiteLLM config file, see also: `https://docs.litellm.ai/docs/proxy/configs` , default `{}`
 - `slm_ansible_role_litellm_public_port`: host port mapped to the container, default `4000`
 
 ## Example usage
