@@ -1,0 +1,24 @@
+---
+# Purpose: assert that the instance really ended up in the expected state.
+# Molecule calls this playbook with `molecule verify`.
+- name: VERIFY | DEFAULT
+  hosts: all
+  gather_facts: false # Quicker, if you do not need facts
+  tasks:
+    - name: Verify LiteLLM responds on localhost:4000
+      ansible.builtin.uri:
+        url: http://localhost:4000/
+        method: GET
+        status_code: 200
+        return_content: true
+      register: litellm_http
+      retries: 12
+      delay: 5
+      until: litellm_http.status is defined and litellm_http.status == 200
+
+    - name: Assert the HTTP request did not fail
+      ansible.builtin.assert:
+        that:
+          - litellm_http.status is defined
+          - litellm_http.status | int < 400
+        fail_msg: "LiteLLM did not respond successfully on localhost:4000 (status={{ litellm_http.status | default('unknown') }})"

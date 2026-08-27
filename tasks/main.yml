@@ -1,0 +1,141 @@
+#SPDX-License-Identifier: MIT-0
+---
+# tasks file for litellm
+### Inputs:
+- name: LITELLM | Assert inputs | main.yml
+  ansible.builtin.assert:
+    that:
+      - (slm_ansible_role_litellm_docker_compose_dir is defined) and (slm_ansible_role_litellm_docker_compose_dir | length > 0)
+      - (slm_ansible_role_litellm_config_dir is defined) and (slm_ansible_role_litellm_config_dir | length > 0)
+
+### Optional Inputs:
+# - slm_ansible_role_litellm_version: version of LiteLLM docker image (default: "v1.98.0")
+# - slm_ansible_role_litellm_docker_compose_url: URL to download LiteLLM docker-compose file (default: "https://docs.litellm.ai/docker-compose.yml")
+# - slm_ansible_role_litellm_config_yaml: content of the LiteLLM configuration file (default: {})
+# - slm_ansible_role_litellm_public_port: public port for LiteLLM service (default: 4000)
+
+- name: LITELLM | Ensure LiteLLM directories exists
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0777"
+  loop:
+    - "{{ slm_ansible_role_litellm_docker_compose_dir }}"
+    - "{{ slm_ansible_role_litellm_config_dir }}"
+
+- name: LITELLM | Check whether LiteLLM .env exists
+  ansible.builtin.stat:
+    path: "{{ slm_ansible_role_litellm_docker_compose_dir }}/.env"
+  register: litellm_env_file_stat
+  changed_when: false
+
+- name: LITELLM | Read existing LiteLLM .env file
+  when: litellm_env_file_stat.stat.exists
+  ansible.builtin.slurp:
+    path: "{{ slm_ansible_role_litellm_docker_compose_dir }}/.env"
+  register: litellm_env_file_content
+  no_log: true
+
+- name: LITELLM | Set keys from existing .env
+  ansible.builtin.set_fact:
+    litellm_master_key_file: >-
+      {{
+        (
+          (litellm_env_file_content.content | default('') | b64decode)
+          | regex_findall('(?m)^LITELLM_MASTER_KEY=(.+)$')
+          | first
+          | default('')
+        )
+      }}
+    litellm_salt_key_file: >-
+      {{
+        (
+          (litellm_env_file_content.content | default('') | b64decode)
+          | regex_findall('(?m)^LITELLM_SALT_KEY=(.+)$')
+          | first
+          | default('')
+        )
+      }}
+  changed_when: false
+  no_log: true
+
+- name: LITELLM | Resolve effective LiteLLM keys
+  ansible.builtin.set_fact:
+    litellm_master_key: >-
+      {{
+        litellm_master_key_file
+        if (litellm_master_key_file | length > 0)
+        else 'sk-' ~ lookup('password', '/dev/null length=32 chars=ascii_letters,digits')
+      }}
+    litellm_salt_key: >-
+      {{
+        litellm_salt_key_file
+        if (litellm_salt_key_file | length > 0)
+        else 'sk-' ~ lookup('password', '/dev/null length=32 chars=ascii_letters,digits')
+      }}
+  changed_when: false
+  no_log: true
+
+- name: LITELLM | Download LiteLLM docker-compose file to predefined location
+  ansible.builtin.get_url:
+    url: "{{ slm_ansible_role_litellm_docker_compose_url }}"
+    dest: "{{ slm_ansible_role_litellm_docker_compose_dir }}/litellm.yml"
+    mode: "0644"
+    force: false
+
+- name: LITELLM | Replace parts in default docker-compose file
+  ansible.builtin.replace:
+    path: "{{ slm_ansible_role_litellm_docker_compose_dir }}/litellm.yml"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+  loop:
+    - regexp: '(^\s*LITELLM_SALT_KEY:\s*).*$'
+      replace: '\1${LITELLM_SALT_KEY}'
+    - regexp: '(^\s*LITELLM_MASTER_KEY:\s*).*$'
+      replace: '\1${LITELLM_MASTER_KEY}'
+    - regexp: 'docker.litellm.ai/berriai/litellm-database:.*'
+      replace: 'docker.litellm.ai/berriai/litellm-database:{{ slm_ansible_role_litellm_version }}'
+
+- name: LITELLM | Create LiteLLM .env file with resolved keys
+  ansible.builtin.copy:
+    dest: "{{ slm_ansible_role_litellm_docker_compose_dir }}/.env"
+    mode: "0600"
+    content: |
+      LITELLM_MASTER_KEY={{ litellm_master_key }}
+      LITELLM_SALT_KEY={{ litellm_salt_key }}
+  no_log: true
+
+- name: LITELLM | Copy LiteLLM config to target host
+  ansible.builtin.copy:
+    content: "{{ slm_ansible_role_litellm_config_yaml }}"
+    dest: "{{ slm_ansible_role_litellm_config_dir }}/litellm_config.yaml"
+    mode: "0644"
+  register: config_file_copy
+
+- name: LITELLM | Create LiteLLM compose override for config mount
+  ansible.builtin.copy:
+    dest: "{{ slm_ansible_role_litellm_docker_compose_dir }}/litellm.override.yml"
+    mode: "0644"
+    content: |
+      services:
+        litellm:
+          command: ["--config", "/app/config.yaml"]
+          ports:
+            - "{{ slm_ansible_role_litellm_public_port | default(4000) }}:4000"
+          volumes:
+            - {{ slm_ansible_role_litellm_config_dir }}/litellm_config.yaml:/app/config.yaml:ro
+          healthcheck:
+            test: ["CMD-SHELL", "curl http://localhost:4000"]
+            interval: 5s
+            timeout: 5s
+            retries: 10
+  register: override_file_creation
+
+- name: LITELLM | Start LiteLLM with Docker Compose
+  when: override_file_creation is changed or config_file_copy is changed
+  community.docker.docker_compose_v2:
+    project_src: "{{ slm_ansible_role_litellm_docker_compose_dir }}"
+    files:
+      - litellm.yml
+      - litellm.override.yml
+    state: present
